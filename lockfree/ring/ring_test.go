@@ -1,6 +1,8 @@
 package ring
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestRing(t *testing.T) {
 	r := New(4)
@@ -57,4 +59,35 @@ func TestRing(t *testing.T) {
 		t.Fatal("expected err not nil,got nil")
 	}
 
+}
+
+func TestRingB(t *testing.T) {
+	r := New(4)
+	go func() {
+		val, err := r.BPop(0)
+		if err != nil {
+			t.Fatalf("expected err:nil,got:%+v", err)
+		}
+		if val.(string) != "1" {
+			t.Fatalf("expected val:1,got:%+v", val)
+		}
+	}()
+	r.Push("1")
+	rr := New(4)
+	doneCh := make(chan struct{})
+	go func() {
+		err := rr.BPush("2", 0)
+		if err != nil {
+			t.Fatalf("expected err:nil,got:%+v", err)
+		}
+		doneCh <- struct{}{}
+	}()
+	<-doneCh
+	val, err := rr.Pop()
+	if err != nil {
+		t.Fatalf("expected err:nil,got:%+v", err)
+	}
+	if val.(string) != "2" {
+		t.Fatalf("expected val:1,got:%+v", val)
+	}
 }
