@@ -157,10 +157,6 @@ func (q *Queue) Iter(fn func(interface{})) {
 	}
 }
 
-func (q *Queue) waitReadyNotify(timerCh <-chan time.Time) {
-
-}
-
 // Close 关闭
 func (q *Queue) Close() {
 	atomic.StoreUint32(&q.closing, 1)
