@@ -16,77 +16,61 @@ var (
 	ErrBPopTimeout = errors.New("bpop timeout")
 )
 
-type item struct {
+type queueItem struct {
 	val  interface{}
 	next unsafe.Pointer
 }
 
-// Option 选项
-type Option func(*option)
-
-type option struct {
+// Queue 队列
+type Queue struct {
+	head               unsafe.Pointer
+	tail               unsafe.Pointer
+	readyCnt           int64
+	closing            uint32
 	blockCheckInterval time.Duration
 }
 
-// Queue 队列
-type Queue struct {
-	head     unsafe.Pointer
-	tail     unsafe.Pointer
-	readyCnt int64
-	closing  uint32
-	option   *option
-}
-
-// WithBlockCheckInterval 添加
-func WithBlockCheckInterval(blockCheckInterval time.Duration) Option {
-	return func(option *option) {
-		option.blockCheckInterval = blockCheckInterval
-	}
-}
-
-func defaultOption() *option {
-	return &option{
-		blockCheckInterval: time.Millisecond * 100,
-	}
-}
-
 // New 初始化队列
-func New(opts ...Option) *Queue {
-	option := defaultOption()
-	for _, opt := range opts {
-		opt(option)
-	}
-	item := &item{}
+func New() *Queue {
+	item := &queueItem{}
 	pointer := unsafe.Pointer(item)
 	q := &Queue{
-		head:   pointer,
-		tail:   pointer,
-		option: option,
+		head:               pointer,
+		tail:               pointer,
+		blockCheckInterval: 100 * time.Millisecond,
 	}
 	return q
 }
 
 // Push 添加元素
 func (q *Queue) Push(val interface{}) {
-	newItem := &item{val: val}
+	newItem := &queueItem{val: val}
 	newItemPointer := unsafe.Pointer(newItem)
-	for {
-		tailPointer := atomic.LoadPointer(&q.tail)
-		oldTailPointer := tailPointer
-		tail := (*item)(tailPointer)
+	tailPointer := atomic.LoadPointer(&q.tail)
+	tail := (*queueItem)(tailPointer)
 
-		for !atomic.CompareAndSwapPointer(&tail.next, nil, newItemPointer) {
-			for tail.next != nil {
-				tail = (*item)(unsafe.Pointer(tail.next))
-			}
-		}
-
-		if atomic.CompareAndSwapPointer(&q.tail, oldTailPointer, newItemPointer) {
-			atomic.AddInt64(&q.readyCnt, 1)
-			break
+	for !atomic.CompareAndSwapPointer(&tail.next, nil, newItemPointer) {
+		nextPointer := atomic.LoadPointer(&tail.next)
+		for nextPointer != nil {
+			tail = (*queueItem)(nextPointer)
+			tailPointer = nextPointer
+			nextPointer = atomic.LoadPointer(&tail.next)
 		}
 	}
 
+	for {
+		oldTailPointer := atomic.LoadPointer(&q.tail)
+		nextPointer := atomic.LoadPointer(&tail.next)
+		for nextPointer != nil {
+			tail = (*queueItem)(nextPointer)
+			tailPointer = nextPointer
+			nextPointer = atomic.LoadPointer(&tail.next)
+		}
+		for atomic.CompareAndSwapPointer(&q.tail, oldTailPointer, tailPointer) {
+			atomic.AddInt64(&q.readyCnt, 1)
+			return
+		}
+	}
 }
 
 // Pop 获取元素
@@ -107,9 +91,8 @@ func (q *Queue) BPop(timeout time.Duration) (interface{}, error) {
 
 func (q *Queue) pop(block bool, timerCh <-chan time.Time) (interface{}, error) {
 	for {
-
 		headPointer := atomic.LoadPointer(&q.head)
-		head := (*item)(headPointer)
+		head := (*queueItem)(headPointer)
 
 		next := atomic.LoadPointer(&head.next)
 		if next == nil {
@@ -127,7 +110,7 @@ func (q *Queue) pop(block bool, timerCh <-chan time.Time) (interface{}, error) {
 				}
 				oldReadyCnt := atomic.LoadInt64(&q.readyCnt)
 				if oldReadyCnt < 1 {
-					time.Sleep(q.option.blockCheckInterval)
+					time.Sleep(q.blockCheckInterval)
 					continue
 				}
 				break
@@ -137,7 +120,7 @@ func (q *Queue) pop(block bool, timerCh <-chan time.Time) (interface{}, error) {
 		nextPointer := unsafe.Pointer(next)
 
 		if atomic.CompareAndSwapPointer(&q.head, headPointer, nextPointer) {
-			nextItem := (*item)(unsafe.Pointer(next))
+			nextItem := (*queueItem)(unsafe.Pointer(next))
 			atomic.AddInt64(&q.readyCnt, -1)
 			return nextItem.val, nil
 		}
